@@ -1,0 +1,8 @@
+# Runtime state, journals, and credentials generated while operating the skill.
+work/
+
+# Python build and test artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage

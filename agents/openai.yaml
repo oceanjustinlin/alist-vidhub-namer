@@ -1,0 +1,4 @@
+interface:
+  display_name: "AList Infuse + VidHub Namer"
+  short_description: "Safely name, organize, and track AList media state"
+  default_prompt: "Use $alist-vidhub-namer to scan an AList media path, filter already processed files with its version-aware local ledger, and create reviewable Infuse/VidHub naming or Movies/TV Shows organization plans."
