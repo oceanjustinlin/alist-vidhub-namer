@@ -95,3 +95,11 @@ For the complete `Movies/` or `TV Shows/` layer, require a separate `organize-pl
 When video names, media folders, and organization have all changed, roll back in reverse dependency order: organization move, media-folder rename, video rename.
 
 After renaming, rescan only the changed Infuse or VidHub file source or directory. A full library scan can be expensive for large libraries.
+
+## Batch auto-execute mode
+
+See SKILL.md's "Batch auto-execute mode (opt-in)" for the full rule. Summary: once a user opts in for a session, **video-name** executions for unambiguous entries proceed without a separate per-item confirmation. Unambiguous means `tmdb_resolution.status` is `proposed` (the resolver's own four-part gate — exact title, exact year, score at least 0.9, and a 0.1 lead), plus no destination conflict and a live folder layout matching the plan's scope. Do not re-derive that gate from raw scores.
+
+Folder-name renames and `organize-apply --execute` moves stay batch-confirmed even in this mode: both rewrite paths that earlier journals reference, so they share one explicit per-batch confirmation covering every folder pending a rename or move at once.
+
+Because `approve` stamps `manually_verified`, confidence 1.0, and a `verification_note` that propagate into the journal and ledger, any `approve` run by batch mode must pass an explicit `--note` marking it auto-approved and unreviewed. Leaving the default `verified by user` text makes auto-approved and human-verified entries indistinguishable in the audit trail.

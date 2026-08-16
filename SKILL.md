@@ -9,7 +9,7 @@ Create a reviewable filename plan, then apply only explicitly approved, high-con
 
 ## Safety invariants
 
-- Default to planning. Do not execute remote renames without the user's explicit approval of the exact AList root path and plan summary.
+- Default to planning. Do not execute remote renames without the user's explicit approval of the exact AList root path and plan summary, unless the user has opted into batch auto-execute mode (see Workflow), which covers video-name renames only; folder-name renames and the `organize-apply` move into `Movies/`/`TV Shows/` still require one explicit per-batch approval even in that mode.
 - Refuse to execute against `/`. Ask the user for a narrower mounted path.
 - Never call delete, copy, upload, recursive-move, or AList storage-admin endpoints. Allow `mkdir` and single-name `move` only for an exact 1-20-folder `organize-plan` approved with root and count confirmations.
 - Never expose passwords or tokens. Persist AList or user-owned TMDB tokens only through the explicit interactive setup commands; require new mode-0600 files and exclude them from shared artifacts.
@@ -150,7 +150,7 @@ python3 scripts/alist_vidhub_namer.py folder-plan \
 python3 scripts/alist_vidhub_namer.py apply --plan work/folder-plan.json
 ```
 
-Require confirmation of the exact parent path, every mapping, and folder count. Execute with a separate journal:
+Require confirmation of the exact parent path, every mapping, and folder count. Batch auto-execute mode does not waive this; it only folds it into the single combined per-batch confirmation. Execute with a separate journal:
 
 ```bash
 python3 scripts/alist_vidhub_namer.py apply \
@@ -216,6 +216,22 @@ python3 scripts/alist_vidhub_namer.py select \
 
 Never select arbitrary first results. Show every exact mapping in the batch to the user.
 
+### Batch auto-execute mode (opt-in)
+
+By default, follow the full review-then-approve flow in every step below for every mutation. A user running personal, repeated batches over the same library may instead opt into batch auto-execute mode, which changes how much gets confirmed per item versus per batch:
+
+- Ask once, the first time in a session, whether to switch into this mode. Once the user agrees, do not ask again to re-enter it for later batches in the same session.
+- Under this mode, resolve TMDB identity, `approve`, `select`, and execute **video-name** renames without a separate per-item confirmation, but only when the item is unambiguous by all of:
+  - `tmdb_resolution.status` is `proposed`. Do not restate or re-derive that gate here: `resolve_tmdb_entries` grants `proposed` only for an exact title match, an exact year match, a top score of at least 0.9, and at least a 0.1 lead over the runner-up, all four together. An `ambiguous`, `not_found`, or `unresolved` entry is never eligible, and neither is a lone candidate that failed the gate.
+  - No existing folder or TMDB ID conflict already present in the destination directory.
+  - The live folder layout matches what the plan expected (flat episodes, or season subfolders whose contents already match the `SxxEyy` filenames). A folder whose actual scope differs from what was scanned or shortlisted — more seasons nested inside than expected, an unexpected wrapper directory — is never unambiguous, regardless of TMDB score; stop and ask how to handle it.
+- `approve` stamps `manually_verified`, `confidence` 1.0, and a `verification_note` on the entry, and that provenance is carried into the plan, the journal, and the ledger. When batch mode drives `approve` without a human identity call, always pass an explicit `--note` that says so, for example `--note 'auto-approved in batch mode: tmdb_resolution=proposed, not human-reviewed'`. Never let it fall back to the default `verified by user` text, and never present an auto-approved entry to the user later as if a person had checked it.
+- Two mutation classes stay batch-confirmed rather than per-item automatic, because each one invalidates paths that earlier journals depend on:
+  - Folder-name renames (`folder-plan` plus `apply`). A folder rename rewrites every descendant AList path, so a wrong target name breaks the paths recorded in every video journal written before it and makes the documented rollback order load-bearing rather than advisory.
+  - `organize-apply --execute` moves into `Movies/`/`TV Shows/`.
+  Collect one explicit confirmation per batch covering both classes together: present every folder pending a rename or a move across the whole batch at once and get a single combined go, rather than asking per show. Video-name renames for entries that passed the unambiguous test above do not need to wait for it.
+- Anything that fails the unambiguous test above still needs the user's identity call before `approve`, exactly as in the default flow — batch mode only removes the *redundant* re-confirmations, not judgment calls a script cannot make.
+
 ### 3. Review with the user
 
 Summarize counts by status and media type. Show representative old-to-new mappings and every conflict class. For large plans, give the CSV as the review surface.
@@ -226,11 +242,11 @@ Run an apply preview:
 python3 scripts/alist_vidhub_namer.py apply --plan work/vidhub-canary-5.json
 ```
 
-Ask the user to approve the exact root path, every video mapping in the batch, and total file mutations including subtitles. A request to research, scan, audit, or plan is not approval to rename.
+Ask the user to approve the exact root path, every video mapping in the batch, and total file mutations including subtitles. A request to research, scan, audit, or plan is not approval to rename. Under batch auto-execute mode, video-name mappings that pass the unambiguous test replace this per-mapping approval; folder renames and organization moves still need the one combined per-batch confirmation described there.
 
 ### 4. Apply the approved plan
 
-Only after explicit approval, run:
+Only after explicit approval — or, under batch auto-execute mode, for video-name entries that passed the unambiguous test — run:
 
 ```bash
 python3 scripts/alist_vidhub_namer.py apply \
