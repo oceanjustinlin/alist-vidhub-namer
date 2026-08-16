@@ -105,45 +105,45 @@ TV Shows/
 
 ## Before and after examples
 
-These examples illustrate a confirmed plan. They are not automatic matches: verify the title, year, episode, language, and TMDB ID before approval.
+These examples use filename patterns from a local scan while omitting server and mount details. They illustrate a confirmed plan, not an automatic match: verify the title, year, episode, language, and TMDB ID before approval.
 
-### Movie and subtitle
+### Movie folder and filename
 
 ```text
 Before
-  Inception_2010_1080p_BluRay_x264_DTS-Group.mkv
-  Inception_2010_1080p_BluRay_x264_DTS-Group.zh-CN.srt
+  [为所应为][1989][英语中字][1080P][780MB]/
+    [为所应为].Do.the.Right.Thing.1989.BD.MiniSD-TLF.mkv
 
 After
-  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.mkv
-  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.zh-CN.srt
+  Movies/为所应为 Do the Right Thing (1989) {tmdb-925}/
+    Do.the.Right.Thing.1989.{tmdb-925}.BD.MiniSD-TLF.mkv
 ```
 
-The subtitle keeps its language suffix and adopts the complete video stem.
+The plan removes share-folder noise, preserves useful release tags, and adds the verified movie ID. A paired subtitle would use the complete target video stem followed by its existing language suffix.
 
 ### TV episode
 
 ```text
 Before
-  Breaking.Bad.2008.S1E1.Pilot.1080p.BluRay.x265.mkv
+  先见之明.S01E01.HD1080P.YYeTs.中英双字.霸王龙压制组T-Rex.mp4
 
 After
-  Breaking.Bad.S01E01.Pilot.1080p.BluRay.x265.mkv
+  The.OA.S01E01.1080p-YYeTs.mp4
 ```
 
-The series year and ID belong in the series folder and plan, while the episode file keeps the series title and normalized `SxxEyy` key.
+The plan resolves the Chinese title, removes subtitle and encoder noise, and keeps the source-evidenced release group. The series year and ID belong in the series folder and plan, while the episode file keeps the series title and normalized `SxxEyy` key.
 
 ### Folder organization
 
 ```text
 Before
-  /Incoming/Breaking Bad Season 1/
+  the vince staple show/
 
 After
-  /TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}/Season 01/
+  TV Shows/The Vince Staples Show (2024) {tmdb-243861}/
 ```
 
-Moving a folder and renaming a video use separate plans and journals. Review both operations before execution, then roll them back in reverse dependency order if needed.
+The plan corrects capitalization and adds the verified year and ID. Moving a folder and renaming a video use separate plans and journals. Review both operations before execution, then roll them back in reverse dependency order if needed.
 
 ## Common commands
 

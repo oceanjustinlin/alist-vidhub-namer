@@ -105,45 +105,45 @@ TV Shows/
 
 ## 修改前后示例
 
-以下是已经人工确认的计划示例，不代表自动匹配。执行前仍要核验标题、年份、集号、语言和 TMDB ID。
+以下示例保留了本地扫描到的文件名形态，但去掉了服务器和挂载路径。它们代表人工确认后的计划，不代表自动匹配；执行前仍要核验标题、年份、集号、语言和 TMDB ID。
 
-### 电影与字幕
+### 电影目录与文件
 
 ```text
 修改前
-  Inception_2010_1080p_BluRay_x264_DTS-Group.mkv
-  Inception_2010_1080p_BluRay_x264_DTS-Group.zh-CN.srt
+  [为所应为][1989][英语中字][1080P][780MB]/
+    [为所应为].Do.the.Right.Thing.1989.BD.MiniSD-TLF.mkv
 
 修改后
-  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.mkv
-  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.zh-CN.srt
+  Movies/为所应为 Do the Right Thing (1989) {tmdb-925}/
+    Do.the.Right.Thing.1989.{tmdb-925}.BD.MiniSD-TLF.mkv
 ```
 
-字幕保留语言后缀，并使用与视频完全一致的文件名前缀。
+计划会去掉分享目录噪声、保留有用的发布标签，并加入已核验的电影 ID。配对字幕会使用完整目标视频名作为前缀，再保留原有语言后缀。
 
 ### 电视剧单集
 
 ```text
 修改前
-  Breaking.Bad.2008.S1E1.Pilot.1080p.BluRay.x265.mkv
+  先见之明.S01E01.HD1080P.YYeTs.中英双字.霸王龙压制组T-Rex.mp4
 
 修改后
-  Breaking.Bad.S01E01.Pilot.1080p.BluRay.x265.mkv
+  The.OA.S01E01.1080p-YYeTs.mp4
 ```
 
-剧集年份与 ID 放在剧集目录和计划中；单集保留剧名与规范化后的 `SxxEyy` 键。
+计划会解析中文片名、去掉字幕和压制组噪声，并保留来源可佐证的发布组。剧集年份与 ID 放在剧集目录和计划中；单集保留剧名与规范化后的 `SxxEyy` 键。
 
 ### 目录整理
 
 ```text
 修改前
-  /Incoming/Breaking Bad Season 1/
+  the vince staple show/
 
 修改后
-  /TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}/Season 01/
+  TV Shows/The Vince Staples Show (2024) {tmdb-243861}/
 ```
 
-移动目录与重命名视频使用独立计划和日志。执行前分别审阅；需要恢复时按依赖的反向顺序回滚。
+计划会统一大小写，并加入已核验的年份和 ID。移动目录与重命名视频使用独立计划和日志。执行前分别审阅；需要恢复时按依赖的反向顺序回滚。
 
 ## 常用命令
 
