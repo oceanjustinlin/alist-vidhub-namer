@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-> 一个用于 Codex 的 Skill：为 Infuse 和 VidHub 生成可审阅的 AList 媒体命名与目录整理计划。它默认只扫描、不修改远端；只有在用户明确确认后，才会以小批次执行原地操作。
+> 一个可用于 CLI 或 Agent 的工具与 Skill：为 Infuse 和 VidHub 生成可审阅的 AList 媒体命名与目录整理计划。它默认只扫描、不修改远端；只有在用户明确确认后，才会以小批次执行原地操作。
 
 ## 这是什么
 
@@ -31,7 +31,7 @@
 
 ## 快速开始
 
-克隆仓库后，将该目录配置为 Codex 的 `alist-vidhub-namer` Skill。在 Codex 中通过 `$alist-vidhub-namer` 调用。
+克隆仓库后，可从终端、脚本或 Agent harness 运行 CLI。你的 harness 支持 Skill 指令时，请阅读 [SKILL.md](SKILL.md)。
 
 CLI 只使用 Python 标准库。在仓库根目录运行：
 
@@ -43,7 +43,7 @@ python3 scripts/alist_vidhub_namer.py --help
 
 ```bash
 export ALIST_URL='https://alist.example.test'
-export ALIST_USERNAME='codex-canary'
+export ALIST_USERNAME='alist-canary'
 python3 scripts/alist_vidhub_namer.py login --token-file work/alist-canary.token
 export ALIST_TOKEN_FILE="$PWD/work/alist-canary.token"
 ```
@@ -75,6 +75,12 @@ python3 scripts/alist_vidhub_namer.py plan \
 | 6. 恢复 | 先预览 `rollback`，再明确执行。 | 仅 `--execute` 后 |
 
 扫描、研究、审计或生成计划的请求都不等同于授权远端改名。脚本会拒绝对 `/` 修改；遇到过期源路径、目标冲突或认证错误会停止；每次成功修改后都会写入日志。
+
+### 批量自动执行模式
+
+在同一个个人媒体库反复处理时，用户可以每个会话选择一次这个模式，免除重复的逐项确认。只有身份唯一明确、计划没有目标冲突、实时目录结构符合计划、且置信度达到计划阈值时，Skill 才能自动批准并执行视频名或文件夹名改动。
+
+该模式不会自动授权移入 `Movies/` 或 `TV Shows/` 的目录移动。执行 `organize-apply --execute` 前，用户仍需审阅本批所有待移动文件夹，并给出一次明确的批次确认。
 
 ## 命名结构
 

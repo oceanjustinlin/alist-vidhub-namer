@@ -2,7 +2,7 @@
 
 [中文文档](README.zh-CN.md)
 
-> A Codex skill for producing reviewable AList media naming and folder-organization plans for Infuse and VidHub. It scans first, changes nothing by default, and applies only explicitly approved, small batches of in-place operations.
+> A portable CLI and agent skill for producing reviewable AList media naming and folder-organization plans for Infuse and VidHub. It scans first, changes nothing by default, and applies only explicitly approved, small batches of in-place operations.
 
 ## What it does
 
@@ -31,7 +31,7 @@ The repository contains an initial working implementation and documentation. At 
 
 ## Quick start
 
-Clone the repository and make the directory available to Codex as the `alist-vidhub-namer` skill. In Codex, invoke it as `$alist-vidhub-namer`.
+Clone the repository and run the CLI from a terminal, script, or agent harness. Read [SKILL.md](SKILL.md) when your harness supports skill instructions.
 
 The CLI uses Python's standard library. From the repository root:
 
@@ -43,7 +43,7 @@ Create a temporary AList token without putting a password in shell history:
 
 ```bash
 export ALIST_URL='https://alist.example.test'
-export ALIST_USERNAME='codex-canary'
+export ALIST_USERNAME='alist-canary'
 python3 scripts/alist_vidhub_namer.py login --token-file work/alist-canary.token
 export ALIST_TOKEN_FILE="$PWD/work/alist-canary.token"
 ```
@@ -75,6 +75,12 @@ Use `--resolver auto` after configuring a user-owned TMDB token. It falls back t
 | 6. Recover | Preview `rollback` before explicitly executing it. | Only after `--execute` |
 
 An ordinary request to scan, research, audit, or plan does not authorize a remote rename. The script refuses mutations at `/`, stops on stale paths or target conflicts, and writes journals after every successful mutation.
+
+### Batch auto-execute mode
+
+For repeated work in one personal library, opt in once per session to remove redundant per-item approvals. The skill may then approve and execute video-name or folder-name changes only when one identity is clear, the plan has no destination conflict, the live layout matches the plan, and confidence meets the plan threshold.
+
+This mode does not approve directory moves into `Movies/` or `TV Shows/`. Before `organize-apply --execute`, you still review every pending folder and provide one explicit confirmation for that batch.
 
 ## Naming model
 
