@@ -103,6 +103,48 @@ TV Shows/
       The.Pitt.S01E01.1080p.WEB-DL.zh-CN.srt
 ```
 
+## 修改前后示例
+
+以下是已经人工确认的计划示例，不代表自动匹配。执行前仍要核验标题、年份、集号、语言和 TMDB ID。
+
+### 电影与字幕
+
+```text
+修改前
+  Inception_2010_1080p_BluRay_x264_DTS-Group.mkv
+  Inception_2010_1080p_BluRay_x264_DTS-Group.zh-CN.srt
+
+修改后
+  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.mkv
+  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.zh-CN.srt
+```
+
+字幕保留语言后缀，并使用与视频完全一致的文件名前缀。
+
+### 电视剧单集
+
+```text
+修改前
+  Breaking.Bad.2008.S1E1.Pilot.1080p.BluRay.x265.mkv
+
+修改后
+  Breaking.Bad.S01E01.Pilot.1080p.BluRay.x265.mkv
+```
+
+剧集年份与 ID 放在剧集目录和计划中；单集保留剧名与规范化后的 `SxxEyy` 键。
+
+### 目录整理
+
+```text
+修改前
+  /Incoming/Breaking Bad Season 1/
+
+修改后
+  /TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}/Season 01/
+```
+
+移动目录与重命名视频使用独立计划和日志。执行前分别审阅；需要恢复时按依赖的反向顺序回滚。
+
 ## 常用命令
 
 | 命令 | 用途 |

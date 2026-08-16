@@ -103,6 +103,48 @@ TV Shows/
       The.Pitt.S01E01.1080p.WEB-DL.zh-CN.srt
 ```
 
+## Before and after examples
+
+These examples illustrate a confirmed plan. They are not automatic matches: verify the title, year, episode, language, and TMDB ID before approval.
+
+### Movie and subtitle
+
+```text
+Before
+  Inception_2010_1080p_BluRay_x264_DTS-Group.mkv
+  Inception_2010_1080p_BluRay_x264_DTS-Group.zh-CN.srt
+
+After
+  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.mkv
+  Inception.2010.{tmdb-27205}.1080p.BluRay.x264.DTS-Group.zh-CN.srt
+```
+
+The subtitle keeps its language suffix and adopts the complete video stem.
+
+### TV episode
+
+```text
+Before
+  Breaking.Bad.2008.S1E1.Pilot.1080p.BluRay.x265.mkv
+
+After
+  Breaking.Bad.S01E01.Pilot.1080p.BluRay.x265.mkv
+```
+
+The series year and ID belong in the series folder and plan, while the episode file keeps the series title and normalized `SxxEyy` key.
+
+### Folder organization
+
+```text
+Before
+  /Incoming/Breaking Bad Season 1/
+
+After
+  /TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}/Season 01/
+```
+
+Moving a folder and renaming a video use separate plans and journals. Review both operations before execution, then roll them back in reverse dependency order if needed.
+
 ## Common commands
 
 | Command | Purpose |
