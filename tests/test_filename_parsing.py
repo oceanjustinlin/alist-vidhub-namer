@@ -82,6 +82,45 @@ class SuffixWhitelistTests(unittest.TestCase):
             ".".join(tokens), "Boo.to.a.Goose.1080p.iP.WEB-DL.AAC2.0.H.264-playWEB"
         )
 
+    def test_embedded_digit_in_a_real_title_does_not_flag_the_rest_as_unknown(self):
+        # "Chapter 1: Angel of Death" (The OA S02E01) — a bare number appearing
+        # mid-title used to be mistaken for the start of the technical region,
+        # flagging every later title word ("Angel", "of", "Death") as unknown.
+        tokens, unknown = NAMER.suffix_tokens(
+            "Chapter.1.Angel.of.Death.1080p-YYeTs"
+        )
+        self.assertEqual(unknown, [])
+        self.assertEqual(".".join(tokens), "Chapter.1.Angel.of.Death.1080p-YYeTs")
+
+    def test_chained_audio_channel_digits_are_recognized(self):
+        # "TrueHD.7.1" splits into three tokens on its own dots; the second
+        # digit chains back to the codec through the first.
+        tokens, unknown = NAMER.suffix_tokens("TrueHD.7.1.Atmos")
+        self.assertEqual(unknown, [])
+        self.assertEqual(".".join(tokens), "TrueHD.7.1.Atmos")
+
+    def test_channel_digits_chain_through_codec_spellings_with_suffixes(self):
+        # The codec immediately before the digits is not always a bare word:
+        # "Atmos", "DD+5" and "DTS-X" all license the channel count that
+        # follows, and missing any of them sends a common release to review.
+        for tail in ["TrueHD.Atmos.7.1", "DD+5.1", "DTS-X.7.1", "DDP5.1.Atmos"]:
+            with self.subTest(tail=tail):
+                self.assertEqual(NAMER.suffix_tokens(tail)[1], [])
+
+    def test_common_atmos_release_stays_ready(self):
+        parsed = NAMER.parse_video_name(
+            "Show.S01E01.1080p.BluRay.TrueHD.Atmos.7.1.x265-GRP.mkv"
+        )
+        self.assertEqual(parsed["status"], "ready")
+
+    def test_bare_digit_without_a_preceding_codec_is_not_a_channel_count(self):
+        tokens, unknown = NAMER.suffix_tokens("Halloween.3.AwesomeLand.WEB-HR")
+        self.assertEqual(unknown, [])
+
+    def test_bd_hr_style_source_tag_is_recognized(self):
+        tokens, unknown = NAMER.suffix_tokens("BD-HR.AC3.1024X576.x264-YYeTs")
+        self.assertEqual(unknown, [])
+
     def test_unknown_token_forces_review(self):
         parsed = NAMER.parse_video_name("Show.S01E01.1080p.WEB.x264.SomeJunkToken.mkv")
         self.assertEqual(parsed["status"], "review")
@@ -159,6 +198,36 @@ class EpisodeTitleTests(unittest.TestCase):
             ),
             "Show.S01E09.1080p.WEB.mp4",
         )
+
+
+class GenericEpisodeTitleTests(unittest.TestCase):
+    """Some limited series never get real episode titles in TMDB's own
+    database; it fills the field with 'Episode 1', 'Episode 2', etc. That
+    duplicates the SxxEyy key already in the filename, so it counts as absent."""
+
+    def test_matches_generic_placeholder(self):
+        for name in ["Episode 1", "episode 12", "Episode  7"]:
+            with self.subTest(name=name):
+                self.assertTrue(NAMER.GENERIC_EPISODE_TITLE_RE.match(name))
+
+    def test_does_not_match_a_real_title(self):
+        for name in ["Homecoming", "Episode One", "The Episode", "1:23:45"]:
+            with self.subTest(name=name):
+                self.assertFalse(NAMER.GENERIC_EPISODE_TITLE_RE.match(name))
+
+
+class CurlyQuoteNormalizationTests(unittest.TestCase):
+    """TMDB titles inconsistently use straight vs. typographic punctuation
+    across shows and even within one show's own episode list; normalize to
+    ASCII so the library does not mix styles."""
+
+    def test_curly_apostrophe_becomes_straight(self):
+        self.assertEqual(NAMER.safe_component("Mac’s Banging the Waitress"),
+                         "Mac's.Banging.the.Waitress")
+
+    def test_curly_double_quotes_are_stripped_like_straight_ones(self):
+        self.assertEqual(NAMER.safe_component("The “Big” Deal"),
+                         "The.Big.Deal")
 
 
 class ManualTargetValidationTests(unittest.TestCase):

@@ -66,6 +66,8 @@ TV Shows/
 
 The current script renames files in place; it does not move files or create this directory tree. Treat directory reorganization as a separate, explicitly approved operation.
 
+Every `Season NN/` subfolder is mandatory for a show with genuine season metadata, including its first season — do not leave episodes loose directly in the series folder just because only one season has been shared so far. Check TMDB's `type` and `number_of_seasons` on the series: `Scripted`/`Documentary`/etc. with more than one season, or any `status` of `Returning Series`, gets the `Season NN` wrapper even when only one season's files currently exist locally, since more will land later. The one exception is a true `type: "Miniseries"` with `number_of_seasons: 1` and `status: "Ended"` — TMDB itself does not expect another season, so its episodes sit directly in the series folder with no `Season 01` wrapper. When adding a later season to a show whose earlier season was left flat by an earlier mistake, wrap the earlier season into its own `Season NN` folder in the same batch rather than leaving a mixed flat/nested structure — see the `season-wrap-plan`/`season-wrap-apply` commands in [api-and-safety.md](api-and-safety.md), built for exactly this retrofit.
+
 ## Movies
 
 Canonical folder and filename:
@@ -224,6 +226,7 @@ Do not rename unrelated sidecars automatically.
 ## Filesystem safety
 
 - Replace `"`, `\`, `/`, `:`, `|`, `<`, `>`, `*`, and `?` in titles before creating a cross-platform filename. Replace each with the field separator `.`, then collapse any run of dots and trim a trailing one: the episode title `1:23:45` becomes `1.23.45`, and `7:00 A.M.` becomes `7.00.A.M`.
+- Normalize typographic quotes to their ASCII form before anything else: TMDB is inconsistent about straight vs. curly punctuation, sometimes within one show's own episode list, so leaving it as-fetched mixes styles across the library. `Mac's` stays `Mac's` however TMDB spelled it; a curly double quote is stripped the same way a straight one is.
 - Preserve the original media extension.
 - Keep one media item per identity. Do not place several unrelated cuts or episodes behind an ambiguous common stem.
 

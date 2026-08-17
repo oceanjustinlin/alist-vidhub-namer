@@ -11,7 +11,7 @@ Create a reviewable filename plan, then apply only explicitly approved, high-con
 
 - Default to planning. Do not execute remote renames without the user's explicit approval of the exact AList root path and plan summary, unless the user has opted into batch auto-execute mode (see Workflow), which covers video-name renames only; folder-name renames and the `organize-apply` move into `Movies/`/`TV Shows/` still require one explicit per-batch approval even in that mode.
 - Refuse to execute against `/`. Ask the user for a narrower mounted path.
-- Never call delete, copy, upload, recursive-move, or AList storage-admin endpoints. Allow `mkdir` and single-name `move` only for an exact 1-20-folder `organize-plan` approved with root and count confirmations.
+- Never call delete, copy, upload, recursive-move, or AList storage-admin endpoints. Allow `mkdir` and single-name `move` only for an exact 1-20-folder `organize-plan`, or an exact 1-20-file `season-wrap-plan`, each approved with root and count confirmations.
 - Never expose passwords or tokens. Persist AList or user-owned TMDB tokens only through the explicit interactive setup commands; require new mode-0600 files and exclude them from shared artifacts.
 - Stop on read-only paths, stale source names, target conflicts, authentication errors, or a journal marked `manual_recovery_required`.
 - Keep execution single-threaded. Preserve the journal until VidHub has rescanned successfully.
@@ -130,6 +130,25 @@ python3 scripts/alist_vidhub_namer.py organize-apply \
 
 The script creates the destination only when absent, moves one folder per API call, and journals each move. Its rollback moves folders back but intentionally retains an empty destination created by the run because the Skill never uses delete endpoints.
 
+A show with genuine season metadata (per naming.md: `type` other than `Miniseries`, or more than one TMDB season, or `status: Returning Series`) needs a `Season NN/` subfolder even for its first season — never leave its episodes loose directly in the series folder just because only one season has been shared so far. A true single-season `Miniseries` is the one exception and stays flat. When a season's files are already sitting loose in an existing series folder (its own first season landed there with no wrapper, or an earlier batch skipped this step), use `season-wrap-plan` for 1-20 exact loose files plus a `--season` number to fold them into a fresh `Season NN` subfolder. Unlike `organize-plan`'s relative `--folder`/`--destination`, its `--path` is the absolute series folder, and every listed file must be a video or subtitle carrying an `SxxEyy` marker for that same season. Subtitles are not paired automatically the way `select` pairs them, so list each episode's sidecars too — both the plan and the apply preflight refuse to run while any same-season video or subtitle is left off the list:
+
+```bash
+python3 scripts/alist_vidhub_namer.py season-wrap-plan \
+  --path '/MediaLibrary/TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}' \
+  --season 1 \
+  --file 'Breaking.Bad.S01E01.Pilot.1080p.BluRay.x265.DTS.mkv' \
+  --output work/breaking-bad-s01-wrap-plan.json
+
+python3 scripts/alist_vidhub_namer.py season-wrap-apply \
+  --plan work/breaking-bad-s01-wrap-plan.json \
+  --journal work/breaking-bad-s01-wrap-journal.json \
+  --execute \
+  --confirm-root '/MediaLibrary/TV Shows/绝命毒师 Breaking Bad (2008) {tmdb-1396}' \
+  --confirm-file-count 1
+```
+
+It only ever creates a brand-new `Season NN` folder — it refuses to run if that folder already exists — and moves one file per API call with the same per-mutation journaling and automatic-restore-on-failure as `organize-apply`. `season-wrap-rollback` mirrors `organize-rollback`.
+
 Create a local JSON list containing 1-20 confirmed direct-child mappings:
 
 ```json
@@ -231,7 +250,8 @@ By default, follow the full review-then-approve flow in every step below for eve
 - Two mutation classes stay batch-confirmed rather than per-item automatic, because each one invalidates paths that earlier journals depend on:
   - Folder-name renames (`folder-plan` plus `apply`). A folder rename rewrites every descendant AList path, so a wrong target name breaks the paths recorded in every video journal written before it and makes the documented rollback order load-bearing rather than advisory.
   - `organize-apply --execute` moves into `Movies/`/`TV Shows/`.
-  Collect one explicit confirmation per batch covering both classes together: present every folder pending a rename or a move across the whole batch at once and get a single combined go, rather than asking per show. Video-name renames for entries that passed the unambiguous test above do not need to wait for it.
+  - `season-wrap-apply --execute` folding loose episodes into a new `Season NN/` subfolder — same reasoning, it rewrites paths under the series folder.
+  Collect one explicit confirmation per batch covering all three classes together: present every folder pending a rename, a move, or a season wrap across the whole batch at once and get a single combined go, rather than asking per show. Video-name renames for entries that passed the unambiguous test above do not need to wait for it.
 - Anything that fails the unambiguous test above still needs the user's identity call before `approve`, exactly as in the default flow — batch mode only removes the *redundant* re-confirmations, not judgment calls a script cannot make.
 
 ### 3. Review with the user

@@ -44,6 +44,10 @@ VIDEO_EXTENSIONS = {
     ".mpeg", ".mpg", ".mts", ".rm", ".rmvb", ".ts", ".webm", ".wmv",
 }
 SUBTITLE_EXTENSIONS = {".ass", ".idx", ".smi", ".srt", ".ssa", ".sub", ".vtt"}
+# A season wrap moves an episode and the sidecars that must travel with it.
+# Artwork, .nfo and .url files carry an SxxEyy marker just as readily, so the
+# marker alone cannot decide what belongs inside a Season NN folder.
+SEASON_WRAP_EXTENSIONS = VIDEO_EXTENSIONS | SUBTITLE_EXTENSIONS
 EPISODE_PATTERNS = [
     re.compile(r"(?i)(?<![A-Za-z0-9])S(?P<season>\d{1,2})[ ._-]*E(?P<episode>\d{1,3})(?!\d)"),
     re.compile(r"(?i)(?<!\d)(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?!\d)"),
@@ -93,22 +97,31 @@ HANDLE_SUFFIX_RE = re.compile(r"@\S+$")
 RESOLUTION_RE = re.compile(
     r"(?i)^(?:4320p|2160p|1080[pi]|720p|576p|480p|4k|8k|\d{3,4}[x×]\d{3,4})$"
 )
+# Mirrors the audio branch of RECOGNIZED_TAG_RE below: a codec that is spelled
+# with a "+" ("DD+5"), a suffix ("DTS-X"), or as "Atmos" still has to license
+# the channel digits that follow it, or "TrueHD.Atmos.7.1" reports 7 and 1 as
+# unrecognized and forces a needless review.
+AUDIO_CODEC_RE = re.compile(
+    r"(?i)^(?:aac\d?|ac3|eac3|ddp?[\d+]*|dts(?:-hd)?|ma|truehd|atmos|flac|opus)(?:-[\w.+]+)?$"
+)
 VAGUE_QUALITY_RE = re.compile(r"(?i)^(?:hd|sd|hq|高清|超清)$")
 # Tokens the naming reference recognizes without an explicit spelling entry:
 # episode-title words, numeric fragments, and codec/group compounds.
 RECOGNIZED_TAG_RE = re.compile(
     r"(?i)^(?:"
-    r"\{tmdb-\d+\}|\d+|v\d{1,2}|"
+    r"\{tmdb-\d+\}|v\d{1,2}|"
     r"(?:4320p|2160p|1080[pi]|720p|576p|480p|4k|8k|\d{3,4}[x×]\d{3,4})(?:-[\w.+]+)?|"
     r"(?:x26[45]|h[ ._-]?26[45]|hevc|avc|av1|vp9|vc-?1|xvid|divx|10bit|8bit)(?:-[\w.+]+)?|"
     r"(?:aac\d?|ac3|eac3|ddp?[\d+]*|dts(?:-hd)?|ma|truehd|atmos|flac|opus)(?:-[\w.+]+)?|"
-    r"(?:web|web-?dl|webrip|bluray|bdrip|brrip|remux|hdtv|hdtvrip|dvdrip|uhd)(?:-[\w.+]+)?|"
+    r"(?:web|web-?dl|webrip|bluray|bdrip|brrip|bd|remux|hdtv|hdtvrip|dvdrip|uhd)(?:-[\w.+]+)?|"
     # Streaming platforms and studio sources evidenced by the source name.
     r"(?:ip|hmax|amzn|nf|dsnp|disney\+?|max|hulu|atvp|pcok|stan|itunes|crav)(?:-[\w.+]+)?|"
     r"(?:hdr10\+?|hdr|dovi|dv|sdr|imax|proper|repack|extended|unrated|uncut|final|"
     r"directors|cut|remastered|criterion|cc|hfr|multi)"
     r")$"
 )
+CURLY_QUOTE_MAP = {"‘": "'", "’": "'", "“": '"', "”": '"'}
+CURLY_QUOTE_RE = re.compile("[" + "".join(CURLY_QUOTE_MAP) + "]")
 INVALID_COMPONENT_RE = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
 SEPARATOR_RE = re.compile(r"[\s._]+")
 BRACKET_EDGE_RE = re.compile(r"^[\[【(（{]+|[\]】)）}]+$")
@@ -777,6 +790,11 @@ def clean_title(raw):
 
 def safe_component(value):
     value = unicodedata.normalize("NFKC", value or "")
+    # TMDB titles are inconsistent about straight vs. typographic punctuation
+    # ("Mac's" vs "Mac’s"); NFKC does not fold one into the other since they
+    # are not compatibility variants. Normalize to the ASCII form so the same
+    # show's titles, and titles across shows, do not mix styles.
+    value = CURLY_QUOTE_RE.sub(lambda match: CURLY_QUOTE_MAP[match.group()], value)
     value = INVALID_COMPONENT_RE.sub(" ", value)
     value = SEPARATOR_RE.sub(".", value).strip(" .-")
     value = re.sub(r"\.{2,}", ".", value)
@@ -824,6 +842,22 @@ def suffix_tokens(raw):
     if any(RESOLUTION_RE.match(token) for token in kept):
         kept = [token for token in kept if not VAGUE_QUALITY_RE.match(token)]
 
+    # A bare number is only a channel count ("TrueHD.7.1" split on its own
+    # dots into "TrueHD", "7", "1") when it chains back to an audio codec
+    # token. Anywhere else a bare number is ordinary episode-title text
+    # ("Chapter 1", "Halloween 3") and must not be treated as the start of
+    # the technical region on its own — doing so used to make every later
+    # title word look unrecognized. Computed as one left-to-right pass so a
+    # second channel digit ("1" after "7") chains through the first.
+    audio_chain_digit = [False] * len(kept)
+    for i, token in enumerate(kept):
+        if not re.match(r"^\d+$", token) or i == 0:
+            continue
+        previous = kept[i - 1]
+        audio_chain_digit[i] = bool(
+            AUDIO_CODEC_RE.match(previous) or audio_chain_digit[i - 1]
+        )
+
     def recognized(index):
         token = kept[index]
         if TECH_TAG_SPELLING.get(token.casefold()) or RECOGNIZED_TAG_RE.match(token):
@@ -832,8 +866,10 @@ def suffix_tokens(raw):
         if token.casefold() == "h" and index + 1 < len(kept) \
                 and re.match(r"(?i)^26[45]\b", kept[index + 1]):
             return True
-        return index and kept[index - 1].casefold() == "h" \
-            and re.match(r"(?i)^26[45]\b", token) is not None
+        if index and kept[index - 1].casefold() == "h" \
+                and re.match(r"(?i)^26[45]\b", token) is not None:
+            return True
+        return audio_chain_digit[index]
 
     # Everything before the first technical tag is the episode title, which is
     # free text and never a whitelist violation. Only the technical region is
@@ -1927,6 +1963,379 @@ def command_organize_rollback(args):
     print("Organize rollback complete: {} folders restored".format(len(candidates)))
 
 
+def season_wrap_candidates(content, season):
+    """Names in a listing that belong inside that season's wrapper: a media or
+    sidecar file carrying an SxxEyy marker for `season`.
+
+    Shared by the plan and the apply preflight so both decide membership the
+    same way. Anything this returns is also what validate_season_wrap_plan
+    accepts, so a file it names can always be added with --file.
+    """
+    names = []
+    for item in content:
+        name = str(item.get("name", ""))
+        if item.get("is_dir") or Path(name).suffix.lower() not in SEASON_WRAP_EXTENSIONS:
+            continue
+        match = find_episode(Path(name).stem)
+        if match is not None and int(match.group("season")) == season:
+            names.append(name)
+    return names
+
+
+def ensure_no_season_wrap_stragglers(content, names, season, season_folder):
+    """`select` pairs a video's sidecars automatically; a season wrap moves only
+    the names it was given, so wrapping the videos alone would strand their
+    subtitles in the series folder.
+
+    Re-run against a fresh listing immediately before mutating, not only when
+    the plan is written: a sidecar can land in the folder after the plan is
+    built, and a hand-edited plan can drop one.
+    """
+    listed = {name.casefold() for name in names}
+    stragglers = sorted(
+        name for name in season_wrap_candidates(content, season)
+        if name.casefold() not in listed
+    )
+    if stragglers:
+        raise ToolError(
+            "These season {} files would be stranded outside {}; add them with --file "
+            "or move them separately: {}".format(season, season_folder, ", ".join(stragglers))
+        )
+
+
+def command_season_wrap_plan(args):
+    """Plan wrapping 1-20 loose SxxEyy files already sitting directly under a
+    show container into a fresh 'Season NN' subfolder.
+
+    This exists because organize-plan/folder-plan only ever move or rename
+    whole folders, never individual files, so there was no supported way to
+    bring an already-organized season's loose episodes into naming.md's
+    canonical Season NN layout after the fact (see the batch20/21 Pitt S01 /
+    Inside No. 9 S09 precedent). This command always creates a brand-new
+    destination subfolder; it never targets an existing one.
+    """
+    root = args.path
+    if not isinstance(root, str) or not root.startswith("/") or root == "/" \
+            or posixpath.normpath(root) != root:
+        raise ToolError("--path must be a normalized, narrow, non-root absolute AList path")
+    if not isinstance(args.season, int) or not 0 <= args.season <= 99:
+        raise ToolError("--season must be an integer between 0 and 99")
+    season_folder = "Season {:02d}".format(args.season)
+    destination_path = join_path(root, season_folder)
+    names = list(dict.fromkeys(args.file))
+    if len(names) != len(args.file):
+        raise ToolError("--file values must be unique")
+    if not 1 <= len(names) <= 20:
+        raise ToolError("Season wrap plan requires 1-20 exact source files")
+
+    client = AListClient.from_environment(args.timeout, args.interactive_auth)
+    settings = client.settings()
+    listing = client.list_dir(root, refresh=True)
+    if not listing["write"]:
+        raise ToolError("The selected season-wrap root is read-only")
+    items = {str(item.get("name", "")): item for item in listing["content"]}
+    existing_folded = {name.casefold() for name in items}
+    if season_folder.casefold() in existing_folded:
+        raise ToolError("Season folder already exists: {}".format(destination_path))
+
+    entries = []
+    for name in names:
+        item = items.get(name)
+        if item is None:
+            raise ToolError("Source file changed or disappeared: {}".format(join_path(root, name)))
+        if item.get("is_dir"):
+            raise ToolError("Season wrap source is not a file: {}".format(name))
+        # The SxxEyy/season gate lives in validate_season_wrap_plan so that
+        # season-wrap-apply re-checks it against the plan it actually loads.
+        entries.append({
+            "name": name,
+            "source_path": join_path(root, name),
+            "target_path": join_path(destination_path, name),
+        })
+
+    ensure_no_season_wrap_stragglers(listing["content"], names, args.season, season_folder)
+
+    plan = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": uuid.uuid4().hex,
+        "created_at": utc_now(),
+        "plan_kind": "season_wrap",
+        "alist_url": client.base_url,
+        "alist_version": settings.get("version"),
+        "root_path": root,
+        "season": args.season,
+        "season_folder": season_folder,
+        "destination_path": destination_path,
+        "writable": True,
+        "providers": listing["providers"],
+        "file_count": len(entries),
+        "entries": entries,
+    }
+    validate_season_wrap_plan(plan)
+    atomic_json_write(args.output, plan)
+    print("Season wrap plan: {} files -> {}".format(len(entries), destination_path))
+    for entry in entries:
+        print("{} -> {}".format(entry["source_path"], entry["target_path"]))
+    print("Season wrap plan written to {}".format(args.output))
+
+
+def validate_season_wrap_plan(plan):
+    if plan.get("schema_version") != SCHEMA_VERSION or plan.get("plan_kind") != "season_wrap":
+        raise ToolError("Invalid or unsupported season wrap plan")
+    root = plan.get("root_path")
+    season = plan.get("season")
+    season_folder = plan.get("season_folder")
+    destination_path = plan.get("destination_path")
+    entries = plan.get("entries")
+    if not isinstance(root, str) or not root.startswith("/") or root == "/":
+        raise ToolError("Season wrap plan root_path must be a narrow absolute path")
+    if posixpath.normpath(root) != root:
+        raise ToolError("Season wrap plan root_path is not normalized")
+    if not isinstance(season, int) or not 0 <= season <= 99:
+        raise ToolError("Season wrap plan season must be an integer between 0 and 99")
+    if season_folder != "Season {:02d}".format(season):
+        raise ToolError("Season wrap plan season_folder does not match season")
+    if destination_path != posixpath.normpath(join_path(root, season_folder)):
+        raise ToolError("Season wrap plan destination_path does not match root_path/season_folder")
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 20:
+        raise ToolError("Season wrap plan must contain 1-20 exact files")
+    if plan.get("file_count") != len(entries):
+        raise ToolError("Season wrap plan file_count does not match entries")
+    seen = set()
+    target_seen = set()
+    required = {"name", "source_path", "target_path"}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != required:
+            raise ToolError("Invalid season wrap plan entry")
+        name = entry["name"]
+        validate_folder_target(name)
+        # Checked here rather than only where the plan is built, so a plan that
+        # was hand-edited or reused after the folder changed cannot talk apply
+        # into moving a poster, a movie, or another season's episode.
+        if Path(name).suffix.lower() not in SEASON_WRAP_EXTENSIONS:
+            raise ToolError(
+                "Season wrap entry is not a video or subtitle file: {}".format(name)
+            )
+        match = find_episode(Path(name).stem)
+        if match is None or int(match.group("season")) != season:
+            raise ToolError(
+                "Season wrap entry does not carry an S{:02d}Eyy marker: {}".format(season, name)
+            )
+        if entry["source_path"] != join_path(root, name):
+            raise ToolError("Season wrap source path does not match root_path/name")
+        if entry["target_path"] != join_path(destination_path, name):
+            raise ToolError("Season wrap target path does not match destination_path/name")
+        if entry["source_path"].casefold() in seen:
+            raise ToolError("Season wrap source paths must be unique")
+        seen.add(entry["source_path"].casefold())
+        if entry["target_path"].casefold() in target_seen:
+            raise ToolError("Season wrap target paths must be unique")
+        target_seen.add(entry["target_path"].casefold())
+
+
+def make_season_wrap_journal(plan, journal_path):
+    journal = {
+        "schema_version": SCHEMA_VERSION,
+        "journal_kind": "season_wrap",
+        "run_id": uuid.uuid4().hex,
+        "plan_id": plan.get("plan_id"),
+        "alist_url": plan.get("alist_url"),
+        "root_path": plan["root_path"],
+        "season": plan["season"],
+        "season_folder": plan["season_folder"],
+        "destination_path": plan["destination_path"],
+        "destination_created": False,
+        "created_at": utc_now(),
+        "status": "running",
+        "entries": [dict(entry, state="pending", error=None) for entry in plan["entries"]],
+        "rollback_note": None,
+    }
+    atomic_json_write(journal_path, journal)
+    return journal
+
+
+def validate_season_wrap_journal(journal):
+    if journal.get("schema_version") != SCHEMA_VERSION \
+            or journal.get("journal_kind") != "season_wrap":
+        raise ToolError("Invalid or unsupported season wrap journal")
+    entries = journal.get("entries")
+    if not isinstance(entries, list):
+        raise ToolError("Invalid season wrap journal entries")
+    plan_shape = {
+        "schema_version": journal.get("schema_version"),
+        "plan_kind": "season_wrap",
+        "root_path": journal.get("root_path"),
+        "season": journal.get("season"),
+        "season_folder": journal.get("season_folder"),
+        "destination_path": journal.get("destination_path"),
+        "file_count": len(entries) if isinstance(entries, list) else None,
+        "entries": [],
+    }
+    allowed_states = {"pending", "moved", "restored", "restore_failed", "rolled_back", "rollback_failed"}
+    required = {"name", "source_path", "target_path", "state", "error"}
+    for record in entries:
+        if not isinstance(record, dict) or not required.issubset(record):
+            raise ToolError("Invalid season wrap journal entry")
+        if record.get("state") not in allowed_states:
+            raise ToolError("Invalid season wrap journal state")
+        plan_shape["entries"].append({key: record[key] for key in ("name", "source_path", "target_path")})
+    validate_season_wrap_plan(plan_shape)
+
+
+def restore_season_wrap_after_failure(client, journal, journal_path, delay):
+    journal["status"] = "restore_after_failure"
+    atomic_json_write(journal_path, journal)
+    for record in reversed(journal["entries"]):
+        if record["state"] != "moved":
+            continue
+        try:
+            client.move(journal["destination_path"], journal["root_path"], [record["name"]])
+            record["state"] = "restored"
+            record["error"] = None
+        except Exception as exc:
+            record["state"] = "restore_failed"
+            record["error"] = str(exc)
+        atomic_json_write(journal_path, journal)
+        time.sleep(delay)
+    restored = all(record["state"] in {"pending", "restored"} for record in journal["entries"])
+    journal["status"] = "restored" if restored else "manual_recovery_required"
+    if journal.get("destination_created"):
+        journal["rollback_note"] = "Empty season folder retained; this Skill never deletes directories."
+    atomic_json_write(journal_path, journal)
+
+
+def command_season_wrap_apply(args):
+    plan = load_json(args.plan)
+    validate_season_wrap_plan(plan)
+    print("Ready to wrap {} files into {}".format(plan["file_count"], plan["destination_path"]))
+    for entry in plan["entries"]:
+        print("{} -> {}".format(entry["source_path"], entry["target_path"]))
+    if not args.execute:
+        print("Dry run only. Re-run with --execute --confirm-root '{}' --confirm-file-count {}".format(
+            plan["root_path"], plan["file_count"]
+        ))
+        return
+    if args.confirm_root != plan["root_path"]:
+        raise ToolError("--confirm-root must exactly match {}".format(plan["root_path"]))
+    if args.confirm_file_count != plan["file_count"]:
+        raise ToolError("--confirm-file-count must exactly match {}".format(plan["file_count"]))
+    if not plan.get("writable"):
+        raise ToolError("Season wrap plan reports a read-only path")
+    journal_path = args.journal or str(Path(args.plan).with_suffix(".season-wrap-journal.json"))
+    if Path(journal_path).exists():
+        raise ToolError("Journal already exists; choose another --journal path")
+    client = AListClient.from_environment(args.timeout, args.interactive_auth)
+    if plan.get("alist_url") and client.base_url != plan["alist_url"]:
+        raise ToolError("ALIST_URL does not match the season wrap plan's alist_url")
+
+    root_listing = client.list_dir(plan["root_path"], refresh=True)
+    if not root_listing["write"]:
+        raise ToolError("The season wrap root is read-only")
+    root_items = {str(item.get("name", "")): item for item in root_listing["content"]}
+    existing_folded = {name.casefold() for name in root_items}
+    if plan["season_folder"].casefold() in existing_folded:
+        raise ToolError("Season folder changed or already exists: {}".format(plan["destination_path"]))
+    for entry in plan["entries"]:
+        item = root_items.get(entry["name"])
+        if item is None or item.get("is_dir"):
+            raise ToolError("Source file changed or disappeared: {}".format(entry["source_path"]))
+    ensure_no_season_wrap_stragglers(
+        root_listing["content"], [entry["name"] for entry in plan["entries"]],
+        plan["season"], plan["season_folder"],
+    )
+
+    journal = make_season_wrap_journal(plan, journal_path)
+    try:
+        client.mkdir(plan["destination_path"])
+        journal["destination_created"] = True
+        atomic_json_write(journal_path, journal)
+        time.sleep(args.move_delay)
+        for record in journal["entries"]:
+            client.move(plan["root_path"], plan["destination_path"], [record["name"]])
+            record["state"] = "moved"
+            atomic_json_write(journal_path, journal)
+            time.sleep(args.move_delay)
+    except Exception as exc:
+        eprint("ERROR: season wrap apply failed; attempting automatic restore: {}".format(exc))
+        restore_season_wrap_after_failure(client, journal, journal_path, args.move_delay)
+        raise ToolError("Season wrap apply failed. Inspect {} (status={})".format(
+            journal_path, journal["status"]
+        ))
+    journal["status"] = "complete"
+    journal["completed_at"] = utc_now()
+    atomic_json_write(journal_path, journal)
+    try:
+        update_state_after_organize(args, journal, reverse=False)
+    except Exception as exc:
+        eprint("WARNING: Remote season wrap succeeded but state update failed: {}".format(exc))
+    print("Wrapped {} files. Journal: {}".format(plan["file_count"], journal_path))
+
+
+def command_season_wrap_rollback(args):
+    journal = load_json(args.journal)
+    validate_season_wrap_journal(journal)
+    candidates = [record for record in reversed(journal["entries"])
+                  if record["state"] in {"moved", "restore_failed", "rollback_failed"}]
+    print("Season wrap rollback would restore {} files to {}".format(
+        len(candidates), journal["root_path"]
+    ))
+    if journal.get("destination_created"):
+        print("The empty season folder will be retained; delete endpoints are never used.")
+    if not args.execute:
+        print("Dry run only. Re-run with --execute --confirm-root '{}'".format(journal["root_path"]))
+        return
+    if args.confirm_root != journal["root_path"]:
+        raise ToolError("--confirm-root must exactly match {}".format(journal["root_path"]))
+    if not candidates:
+        # An apply that failed at mkdir leaves nothing moved and no season
+        # folder to list; listing it here would fail before we could say so.
+        print("Nothing to roll back.")
+        return
+    client = AListClient.from_environment(args.timeout, args.interactive_auth)
+    if journal.get("alist_url") and client.base_url != journal["alist_url"]:
+        raise ToolError("ALIST_URL does not match the season wrap journal's alist_url")
+
+    destination_listing = client.list_dir(journal["destination_path"], refresh=True)
+    destination_items = {str(item.get("name", "")): item for item in destination_listing["content"]}
+    root_listing = client.list_dir(journal["root_path"], refresh=True)
+    root_names = {str(item.get("name", "")).casefold() for item in root_listing["content"]}
+    for record in candidates:
+        if record["name"].casefold() in root_names:
+            raise ToolError("Original location is occupied: {}".format(record["source_path"]))
+        item = destination_items.get(record["name"])
+        if item is None or item.get("is_dir"):
+            raise ToolError("Moved file changed or disappeared: {}".format(record["target_path"]))
+
+    journal["status"] = "rolling_back"
+    atomic_json_write(args.journal, journal)
+    failures = []
+    for record in candidates:
+        try:
+            client.move(journal["destination_path"], journal["root_path"], [record["name"]])
+            record["state"] = "rolled_back"
+            record["error"] = None
+        except Exception as exc:
+            record["state"] = "rollback_failed"
+            record["error"] = str(exc)
+            failures.append(record["target_path"])
+        atomic_json_write(args.journal, journal)
+        time.sleep(args.move_delay)
+    journal["status"] = "rollback_incomplete" if failures else "rolled_back"
+    journal["rolled_back_at"] = utc_now()
+    if journal.get("destination_created"):
+        journal["rollback_note"] = "Empty season folder retained; this Skill never deletes directories."
+    atomic_json_write(args.journal, journal)
+    try:
+        update_state_after_organize(args, journal, reverse=True)
+    except Exception as exc:
+        eprint("WARNING: Remote season wrap rollback completed but state update failed: {}".format(exc))
+    if failures:
+        raise ToolError("Season wrap rollback incomplete for {} files; inspect {}".format(
+            len(failures), args.journal
+        ))
+    print("Season wrap rollback complete: {} files restored".format(len(candidates)))
+
+
 def command_login(args):
     if not sys.stdin.isatty():
         raise ToolError("login must be run interactively in the user's terminal")
@@ -2990,6 +3399,41 @@ def build_parser():
     organize_rollback.add_argument("--move-delay", type=float, default=0.6)
     organize_rollback.add_argument("--state-db", default=DEFAULT_STATE_DB)
     organize_rollback.set_defaults(func=command_organize_rollback)
+
+    season_wrap_plan = subparsers.add_parser(
+        "season-wrap-plan",
+        help="Create a read-only plan to wrap 1-20 loose SxxEyy files into a new Season NN subfolder",
+    )
+    season_wrap_plan.add_argument("--path", required=True, help="Show container holding the loose files")
+    season_wrap_plan.add_argument("--season", required=True, type=int, help="Season number, e.g. 9")
+    season_wrap_plan.add_argument(
+        "--file", action="append", required=True,
+        help="Exact loose file name under --path; repeat once per file",
+    )
+    season_wrap_plan.add_argument("--output", required=True, help="New local season wrap plan path")
+    season_wrap_plan.set_defaults(func=command_season_wrap_plan)
+
+    season_wrap_apply = subparsers.add_parser(
+        "season-wrap-apply", help="Preview or execute an exact season wrap plan"
+    )
+    season_wrap_apply.add_argument("--plan", required=True)
+    season_wrap_apply.add_argument("--journal", help="Rollback journal path; must not already exist")
+    season_wrap_apply.add_argument("--execute", action="store_true")
+    season_wrap_apply.add_argument("--confirm-root", help="Must exactly match plan root when executing")
+    season_wrap_apply.add_argument("--confirm-file-count", type=int)
+    season_wrap_apply.add_argument("--move-delay", type=float, default=0.6)
+    season_wrap_apply.add_argument("--state-db", default=DEFAULT_STATE_DB)
+    season_wrap_apply.set_defaults(func=command_season_wrap_apply)
+
+    season_wrap_rollback = subparsers.add_parser(
+        "season-wrap-rollback", help="Preview or execute reverse moves from a season wrap journal"
+    )
+    season_wrap_rollback.add_argument("--journal", required=True)
+    season_wrap_rollback.add_argument("--execute", action="store_true")
+    season_wrap_rollback.add_argument("--confirm-root", help="Must exactly match journal root")
+    season_wrap_rollback.add_argument("--move-delay", type=float, default=0.6)
+    season_wrap_rollback.add_argument("--state-db", default=DEFAULT_STATE_DB)
+    season_wrap_rollback.set_defaults(func=command_season_wrap_rollback)
     return parser
 
 

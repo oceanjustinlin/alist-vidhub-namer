@@ -94,5 +94,59 @@ class OrganizePlanValidationTests(unittest.TestCase):
             NAMER.validate_organize_plan(plan)
 
 
+class SeasonWrapPlanValidationTests(unittest.TestCase):
+    """season-wrap-apply moves whatever the plan file names, so the SxxEyy and
+    season checks have to live in the validator it runs against that file --
+    not only in the plan command that first wrote it."""
+
+    SHOW = "/Library/TV Shows/Breaking Bad (2008) {tmdb-1396}"
+
+    @classmethod
+    def _plan(cls, names, season=1):
+        folder = "Season {:02d}".format(season)
+        destination = cls.SHOW + "/" + folder
+        return {
+            "schema_version": NAMER.SCHEMA_VERSION,
+            "plan_kind": "season_wrap",
+            "root_path": cls.SHOW,
+            "season": season,
+            "season_folder": folder,
+            "destination_path": destination,
+            "file_count": len(names),
+            "entries": [
+                {
+                    "name": name,
+                    "source_path": cls.SHOW + "/" + name,
+                    "target_path": destination + "/" + name,
+                }
+                for name in names
+            ],
+        }
+
+    def test_accepts_episodes_of_the_planned_season(self):
+        NAMER.validate_season_wrap_plan(self._plan([
+            "Breaking.Bad.S01E01.Pilot.1080p.mkv",
+            "Breaking.Bad.S01E01.Pilot.1080p.zh.srt",
+        ]))
+
+    def test_rejects_an_episode_from_another_season(self):
+        with self.assertRaises(NAMER.ToolError):
+            NAMER.validate_season_wrap_plan(
+                self._plan(["Breaking.Bad.S05E14.Ozymandias.1080p.mkv"])
+            )
+
+    def test_rejects_a_file_with_no_episode_marker(self):
+        for name in ["poster.jpg", "Some.Movie.2019.1080p.mkv"]:
+            with self.subTest(name=name):
+                with self.assertRaises(NAMER.ToolError):
+                    NAMER.validate_season_wrap_plan(self._plan([name]))
+
+    def test_rejects_a_destination_outside_the_series_folder(self):
+        plan = self._plan(["Breaking.Bad.S01E01.Pilot.1080p.mkv"])
+        plan["destination_path"] = "/Library/TV Shows/Season 01"
+        with self.assertRaises(NAMER.ToolError):
+            NAMER.validate_season_wrap_plan(plan)
+
+
 if __name__ == "__main__":
     unittest.main()
