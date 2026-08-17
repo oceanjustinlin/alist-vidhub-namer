@@ -63,6 +63,7 @@ TECH_RE = re.compile(
     r"truehd|atmos|flac|multi|dual[ ._-]?audio"
     r")(?![A-Za-z0-9])"
 )
+GENERIC_EPISODE_TITLE_RE = re.compile(r"(?i)^episode\s*\d+$")
 CJK_RE = re.compile(
     r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]"
 )
@@ -753,7 +754,11 @@ class TMDBClient:
         for episode in payload.get("episodes") or []:
             number = episode.get("episode_number")
             name = str(episode.get("name") or "").strip()
-            if isinstance(number, int) and name:
+            # Some limited series were never given individual episode titles in
+            # TMDB's own database; it fills the field with "Episode 1", "Episode
+            # 2", etc. That duplicates the SxxEyy key already in the filename
+            # and carries no information, so it is treated the same as absent.
+            if isinstance(number, int) and name and not GENERIC_EPISODE_TITLE_RE.match(name):
                 titles[number] = name
         self._season_cache[key] = titles
         return titles
