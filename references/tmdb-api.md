@@ -23,6 +23,7 @@ The local script uses only these read-only requests:
 GET /3/authentication
 GET /3/search/movie
 GET /3/search/tv
+GET /3/tv/{series_id}/season/{season_number}
 ```
 
 Authenticate every request with:
@@ -58,6 +59,14 @@ page                   1
 
 Consume only `results[].id`, `name`, `original_name`, and `first_air_date`.
 
+Season parameters:
+
+```text
+language           default en-US
+```
+
+Consume only `episodes[].episode_number` and `episodes[].name`. Call this once per series and season, after the series ID is verified, to get the canonical episode titles required by [naming.md](naming.md). Reach it through the bundled `TMDBClient.request` method; no CLI subcommand wraps it, and it is still the fixed contract, so never hand-build the request or add parameters. Match strictly on `episode_number`; if a number is missing from the response, drop that episode's title rather than shifting the list.
+
 Do not request images, credits, overviews, recommendations, watch providers, account data, or write endpoints.
 
 Official contracts:
@@ -65,6 +74,7 @@ Official contracts:
 - https://developer.themoviedb.org/reference/authentication-validate-key
 - https://developer.themoviedb.org/reference/search-movie
 - https://developer.themoviedb.org/reference/search-tv
+- https://developer.themoviedb.org/reference/tv-season-details
 
 ## Retry and rate policy
 

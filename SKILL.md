@@ -64,6 +64,8 @@ export TMDB_TOKEN_FILE="$PWD/work/tmdb.token"
 python3 scripts/alist_vidhub_namer.py tmdb-check
 ```
 
+Once a TV series ID is verified, also fetch that series' `en-US` episode titles for every season in the batch, through the season endpoint in the same fixed contract. The episode title is a required filename field; see [references/naming.md](references/naming.md).
+
 With a configured token, `plan` defaults to `--resolver auto` and queries TMDB through the fixed local contract. Without one, it falls back to local filename parsing. Use `--resolver none` to prohibit TMDB network access or `--resolver tmdb` to require it.
 
 For a mixed directory, read [references/state-ledger.md](references/state-ledger.md) and run `pending-report` before a full TMDB-assisted plan. It uses the local ledger to exclude files already processed under the current component rule version:
@@ -102,7 +104,7 @@ For the complete standard, create the media-type layer first:
         Canonical.Series.S01E01.technical-tags.ext
 ```
 
-Use a separate organization plan for 1-20 exact direct-child folders. The destination must be a safe direct child such as `Movies` or `TV Shows`:
+Use a separate organization plan for 1-20 exact source folders. Each `--folder` and the `--destination` is a path relative to `--path`: a bare name is a direct child, and a value containing `/` addresses a folder nested under the root at any depth. Every segment is validated like a direct-child name, and `.`, `..`, and absolute values are refused, so a resolved path can never escape the root. Nesting widens what a single plan can reach, so state the fully resolved source and destination paths — not the relative values you typed — when you present the plan for confirmation. The destination is normally a safe child such as `Movies` or `TV Shows`:
 
 ```bash
 python3 scripts/alist_vidhub_namer.py organize-plan \
@@ -300,10 +302,12 @@ python3 scripts/alist_vidhub_namer.py organize-rollback \
 
 - Use the bundled Python script; do not reimplement AList mutation calls ad hoc.
 - Use only the bundled TMDB client and fixed read-only contract. Never share a credential or send it to any host except `api.themoviedb.org`.
-- Preserve video extensions and useful release tags in the order defined by the naming reference.
+- Preserve video extensions. Keep only tags that the naming reference's whitelist recognizes, in its defined order, and drop the tokens its "Tokens to drop" section lists — embedded-subtitle and language markers such as `中英字幕` or `.chs.eng`, site and channel watermarks, and quality words that duplicate a real tag. "Preserve useful tags" is not "preserve whatever the source wrote".
+- Never accept the script's default `new_name` as the target when a TMDB identity has been resolved. The default is derived from the source stem, so it carries the source's casing and its whole tail through unchanged — `rain.dogs.S01E01...` stays lowercase, `1080p中英字幕` stays intact. Build the target from the canonical title and a filtered tail, then pass it to `approve --new-name`. Before approving, check the target against three things the script does not validate: the title segment matches the resolved TMDB title's spelling and capitalization, the filename contains no CJK text, and every tail token is on the whitelist.
+- For every TV series whose ID is verified, fetch the `en-US` episode titles for each season in the batch through the fixed contract in [references/tmdb-api.md](references/tmdb-api.md), and put them in the episode filenames. This is required, not opportunistic: a source filename with no episode title still gets the canonical one added, and a source filename with a localized one gets it replaced. Match on `episode_number` only. Show the fetched titles alongside the mappings when the batch goes to the user.
 - Put a verified movie TMDB ID in `{tmdb-ID}` immediately after the year. Store a TV series ID and first-air year in the plan and series folder; do not inject either into episode filenames.
 - Apply the query-language default only to second-level folder labels. Keep video filenames canonical for stable scraping.
-- Accept only exact direct-child folder mappings. Refuse root `/`, more than 20 folders, non-directory sources, duplicate targets, occupied targets, and unsafe cross-platform names.
+- Accept only exact direct-child mappings in `folder-plan`. `organize-plan` additionally accepts sources and a destination nested under the root, expressed as relative paths whose every segment is validated; it refuses `.`, `..`, absolute values, and anything that resolves outside the root. Both refuse root `/`, more than 20 folders, non-directory sources, duplicate targets, occupied targets, and unsafe cross-platform names. `organize-plan` also refuses two selected sources where one contains the other, because moving the outer one would carry the inner one with it and strand the second move.
 - Pair only clearly matching external subtitle files and preserve language suffixes.
 - Leave undocumented multi-episode patterns and low-confidence parent-folder inferences in `review`.
 - Prefer AList's single-file rename endpoint over batch/regex rename so each mutation is journaled and reversible.

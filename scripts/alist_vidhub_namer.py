@@ -9,6 +9,7 @@ import argparse
 import csv
 import getpass
 import hashlib
+import itertools
 import json
 import os
 import posixpath
@@ -31,8 +32,8 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 STATE_SCHEMA_VERSION = 1
 SKILL_RELEASE_VERSION = "11.0.0"
-MOVIE_FILE_RULE_VERSION = "movie-file-v1"
-TV_FILE_RULE_VERSION = "tv-episode-v2"
+MOVIE_FILE_RULE_VERSION = "movie-file-v2"
+TV_FILE_RULE_VERSION = "tv-episode-v3"
 SUBTITLE_RULE_VERSION = "subtitle-v1"
 FOLDER_RULE_VERSION = "media-folder-v1"
 ORGANIZATION_RULE_VERSION = "library-layout-v1"
@@ -61,6 +62,51 @@ TECH_RE = re.compile(
     r"x26[45]|h[ ._-]?26[45]|hevc|av1|10bit|aac|ac3|eac3|ddp?\+?|dts(?:[ ._-]?hd)?|"
     r"truehd|atmos|flac|multi|dual[ ._-]?audio"
     r")(?![A-Za-z0-9])"
+)
+CJK_RE = re.compile(
+    r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]"
+)
+# Subtitle/language markers describe container tracks, not the release.
+LANGUAGE_TAG_RE = re.compile(
+    r"(?i)^(?:chs|cht|chi|chn|eng|zh|zh[ ._-]?cn|zh[ ._-]?hans|zh[ ._-]?hant|cn|gb|big5|han)"
+    r"(?:-(?:chs|cht|chi|chn|eng|zh|cn|gb|big5|han))*$"
+)
+# Conventional spelling for whitelisted technical tags, keyed by casefold.
+TECH_TAG_SPELLING = {
+    "web": "WEB", "web-dl": "WEB-DL", "webdl": "WEB-DL", "webrip": "WEBRip",
+    "bluray": "BluRay", "blu-ray": "BluRay", "bd": "BluRay",
+    "bdrip": "BDRip", "brrip": "BRRip",
+    "remux": "REMUX", "hdtv": "HDTV", "dvdrip": "DVDRip", "uhd": "UHD",
+    "hdr": "HDR", "hdr10": "HDR10", "hdr10+": "HDR10+", "dv": "DV",
+    "imax": "IMAX", "proper": "PROPER", "repack": "REPACK",
+    "aac": "AAC", "ac3": "AC3", "eac3": "EAC3", "flac": "FLAC",
+    "dts": "DTS", "dts-hd": "DTS-HD", "truehd": "TrueHD", "atmos": "Atmos",
+    "hevc": "HEVC", "av1": "AV1",
+}
+# Distribution watermarks: a channel handle, a share-site id, a bracketed site
+# tag. A real scene group stays as the "-ReleaseGroup" half of its own token.
+BRACKET_NOISE_RE = re.compile(r"[\[【(（][^\]】)）]*[\]】)）]")
+WATERMARK_RE = re.compile(r"(?i)^(?:@\S+|sw-\d+|[a-z]{2,}-\d{3,})$")
+# A channel handle can also ride along inside another token ("CHS-HAN@CHAOSPACE").
+HANDLE_SUFFIX_RE = re.compile(r"@\S+$")
+RESOLUTION_RE = re.compile(
+    r"(?i)^(?:4320p|2160p|1080[pi]|720p|576p|480p|4k|8k|\d{3,4}[x×]\d{3,4})$"
+)
+VAGUE_QUALITY_RE = re.compile(r"(?i)^(?:hd|sd|hq|高清|超清)$")
+# Tokens the naming reference recognizes without an explicit spelling entry:
+# episode-title words, numeric fragments, and codec/group compounds.
+RECOGNIZED_TAG_RE = re.compile(
+    r"(?i)^(?:"
+    r"\{tmdb-\d+\}|\d+|v\d{1,2}|"
+    r"(?:4320p|2160p|1080[pi]|720p|576p|480p|4k|8k|\d{3,4}[x×]\d{3,4})(?:-[\w.+]+)?|"
+    r"(?:x26[45]|h[ ._-]?26[45]|hevc|avc|av1|vp9|vc-?1|xvid|divx|10bit|8bit)(?:-[\w.+]+)?|"
+    r"(?:aac\d?|ac3|eac3|ddp?[\d+]*|dts(?:-hd)?|ma|truehd|atmos|flac|opus)(?:-[\w.+]+)?|"
+    r"(?:web|web-?dl|webrip|bluray|bdrip|brrip|remux|hdtv|hdtvrip|dvdrip|uhd)(?:-[\w.+]+)?|"
+    # Streaming platforms and studio sources evidenced by the source name.
+    r"(?:ip|hmax|amzn|nf|dsnp|disney\+?|max|hulu|atvp|pcok|stan|itunes|crav)(?:-[\w.+]+)?|"
+    r"(?:hdr10\+?|hdr|dovi|dv|sdr|imax|proper|repack|extended|unrated|uncut|final|"
+    r"directors|cut|remastered|criterion|cc|hfr|multi)"
+    r")$"
 )
 INVALID_COMPONENT_RE = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
 SEPARATOR_RE = re.compile(r"[\s._]+")
@@ -604,6 +650,7 @@ class TMDBClient:
         self.base_url = base_url.rstrip("/")
         self.minimum_interval = 1.0 / requests_per_second
         self.last_request_at = 0.0
+        self._season_cache = {}
 
     @staticmethod
     def configured():
@@ -677,6 +724,40 @@ class TMDBClient:
         payload = self.request("/3/search/{}".format(api_type), params)
         return payload.get("results") or []
 
+    def season_episode_titles(self, series_id, season_number, language="en-US"):
+        """Map episode_number -> episode name for one season.
+
+        references/naming.md requires the episode title in every TV filename,
+        and references/tmdb-api.md pins this to the season endpoint consuming
+        only `episode_number` and `name`. Results are cached per (series,
+        season) so a batch costs one request per season, not one per file. A
+        season TMDB does not have yields an empty map, which callers treat as
+        "omit the title", never as a reason to invent one.
+        """
+        key = (int(series_id), int(season_number))
+        if key in self._season_cache:
+            return self._season_cache[key]
+        try:
+            payload = self.request(
+                "/3/tv/{}/season/{}".format(key[0], key[1]), {"language": language}
+            )
+        except ToolError:
+            # Shortlisted candidates are probed before the user picks one, so a
+            # miss here usually means a wrong candidate rather than a problem.
+            # The caller records `tmdb_episode_title_unavailable` when the top
+            # candidate comes back empty; that lands in the reviewable plan
+            # instead of adding one stderr line per rejected candidate.
+            self._season_cache[key] = {}
+            return {}
+        titles = {}
+        for episode in payload.get("episodes") or []:
+            number = episode.get("episode_number")
+            name = str(episode.get("name") or "").strip()
+            if isinstance(number, int) and name:
+                titles[number] = name
+        self._season_cache[key] = titles
+        return titles
+
 
 def clean_title(raw):
     raw = unicodedata.normalize("NFKC", raw or "")
@@ -707,13 +788,69 @@ def safe_component(value):
     return value
 
 
-def clean_suffix(raw):
+def suffix_tokens(raw):
+    """Split a technical tail into normalized tokens plus the ones left over.
+
+    Returns ``(tokens, unrecognized)``. Dropped silently: embedded-subtitle and
+    language markers, site/channel watermarks, and a vague quality word that
+    duplicates a resolution already present. These describe container tracks or
+    distribution, not the release, and sit outside the documented tag order.
+
+    A token that is neither whitelisted nor known noise is *kept* and also
+    reported in ``unrecognized``: it may be a legitimate release group or
+    edition, and references/naming.md requires asking rather than stripping.
+    Callers surface that as a `review` reason instead of guessing.
+    """
     value = unicodedata.normalize("NFKC", raw or "")
     value = value.strip(" ._-")
     value = re.sub(r"[\s_]+", ".", value)
     value = re.sub(r"\.{2,}", ".", value)
     value = INVALID_COMPONENT_RE.sub(".", value)
-    return value.strip(" .-")
+    # A bracketed site tag can itself contain dots ("ETHEL[EZTVx.to]"), so strip
+    # brackets before splitting or the halves survive as separate tokens.
+    value = BRACKET_NOISE_RE.sub("", value)
+    kept = []
+    for token in value.split("."):
+        token = CJK_RE.sub("", token).strip(" -")
+        token = HANDLE_SUFFIX_RE.sub("", token).strip(" -")
+        if not token or LANGUAGE_TAG_RE.match(token) or WATERMARK_RE.match(token):
+            continue
+        kept.append(token)
+    if any(RESOLUTION_RE.match(token) for token in kept):
+        kept = [token for token in kept if not VAGUE_QUALITY_RE.match(token)]
+
+    def recognized(index):
+        token = kept[index]
+        if TECH_TAG_SPELLING.get(token.casefold()) or RECOGNIZED_TAG_RE.match(token):
+            return True
+        # "H.264-playWEB" arrives split on its own dot; pair the halves.
+        if token.casefold() == "h" and index + 1 < len(kept) \
+                and re.match(r"(?i)^26[45]\b", kept[index + 1]):
+            return True
+        return index and kept[index - 1].casefold() == "h" \
+            and re.match(r"(?i)^26[45]\b", token) is not None
+
+    # Everything before the first technical tag is the episode title, which is
+    # free text and never a whitelist violation. Only the technical region is
+    # checked, so an unknown token there can be surfaced for review.
+    technical_start = next((i for i in range(len(kept)) if recognized(i)), len(kept))
+    tokens = list(kept[:technical_start])
+    unrecognized = []
+    for index in range(technical_start, len(kept)):
+        token = kept[index]
+        canonical = TECH_TAG_SPELLING.get(token.casefold())
+        if canonical is not None:
+            tokens.append(canonical)
+            continue
+        if not recognized(index):
+            unrecognized.append(token)
+        tokens.append(token)
+    return tokens, unrecognized
+
+
+def clean_suffix(raw):
+    tokens, _ = suffix_tokens(raw)
+    return ".".join(tokens).strip(" .-")
 
 
 def find_episode(stem):
@@ -767,7 +904,8 @@ def parse_video_name(name, requested_kind="auto", parent_hint=""):
             title = clean_title(parent_hint)
             parent_fallback = bool(title)
             reasons.append("title_inferred_from_parent")
-        suffix = clean_suffix(stem[episode_match.end() :])
+        suffix_parts, unknown_tags = suffix_tokens(stem[episode_match.end() :])
+        suffix = ".".join(suffix_parts).strip(" .-")
         confidence = 0.68 if parent_fallback else 0.86
         if not title:
             reasons.append("title_missing")
@@ -788,7 +926,8 @@ def parse_video_name(name, requested_kind="auto", parent_hint=""):
             title_end = tech_match.start()
             suffix_start = tech_match.start()
         title = clean_title(stem[:title_end])
-        suffix = clean_suffix(stem[suffix_start:])
+        suffix_parts, unknown_tags = suffix_tokens(stem[suffix_start:])
+        suffix = ".".join(suffix_parts).strip(" .-")
         confidence = 0.78 if year else 0.58
         if tech_match:
             confidence += 0.04
@@ -799,6 +938,12 @@ def parse_video_name(name, requested_kind="auto", parent_hint=""):
             confidence = 0.5 if title else 0.15
         if not year:
             reasons.append("release_year_missing")
+
+    if unknown_tags:
+        # naming.md: an unfamiliar tail token may be a real release group or
+        # edition. Keep it, but never auto-execute on it — ask instead.
+        reasons.append("unrecognized_tail_token:" + ",".join(sorted(set(unknown_tags))))
+        confidence = min(confidence, 0.5)
 
     return {
         "status": "ready" if confidence >= 0.85 else "review",
@@ -896,7 +1041,7 @@ def tmdb_result_to_candidate(media_type, result, query_title, query_year, rank):
     }
 
 
-def build_tmdb_suggestion(entry, candidate):
+def build_tmdb_suggestion(entry, candidate, episode_title=None):
     parsed = parse_video_name(
         entry["old_name"], entry.get("media_type", "auto"),
         parent_hint=posixpath.basename(entry.get("directory", "").rstrip("/")),
@@ -904,6 +1049,7 @@ def build_tmdb_suggestion(entry, candidate):
     title = candidate.get("title") or entry.get("detected_title")
     extension = parsed.get("extension", "")
     parts = [safe_component(title)]
+    suffix = parsed.get("suffix") or ""
     if entry.get("media_type") == "movie":
         # Preserve the filename's explicit identity year. TMDB may expose a later
         # wide-release date for a film that premiered at a festival the year before.
@@ -913,9 +1059,38 @@ def build_tmdb_suggestion(entry, candidate):
         parts.append("{tmdb-%s}" % candidate["tmdb_id"])
     elif parsed.get("season") is not None:
         parts.append("S{:02d}E{:02d}".format(parsed["season"], parsed["episode"]))
-    if parsed.get("suffix"):
-        parts.append(parsed["suffix"])
+        if episode_title:
+            canonical_episode = safe_component(episode_title)
+            parts.append(canonical_episode)
+            # The source may already carry a title, canonical or localized, in
+            # the same slot. Drop that leading run so the TMDB name does not
+            # land next to a stale duplicate of itself.
+            suffix = drop_leading_episode_title(suffix, canonical_episode)
+    if suffix:
+        parts.append(suffix)
     return ".".join(part for part in parts if part) + extension
+
+
+def drop_leading_episode_title(suffix, canonical_episode):
+    """Strip the source's own copy of the episode title from the front of a tail.
+
+    Compares whole leading runs against the canonical title rather than walking
+    token by token, because an episode title can contain tokens that look
+    technical on their own: "Demon 79" ends in a bare number, and stopping at
+    it would leave "79" behind to be appended twice.
+
+    A leading run that does not match is left alone. It may be a real tag the
+    whitelist does not know yet ("1080p-YYeTs"), and dropping tags to make room
+    for a title loses information that cannot be recovered from the target name.
+    """
+    if not suffix or not canonical_episode:
+        return suffix
+    tokens = suffix.split(".")
+    wanted = normalized_identity(canonical_episode)
+    for length in range(len(tokens), 0, -1):
+        if normalized_identity(".".join(tokens[:length])) == wanted:
+            return ".".join(tokens[length:])
+    return suffix
 
 
 def resolve_tmdb_entries(client, entries, language="en-US", max_candidates=3):
@@ -954,11 +1129,30 @@ def resolve_tmdb_entries(client, entries, language="en-US", max_candidates=3):
                 existing["exact_title"] = existing["exact_title"] or candidate["exact_title"]
                 existing["exact_year"] = existing["exact_year"] or candidate["exact_year"]
         candidates = list(candidates_by_id.values())
-        for candidate in candidates:
-            candidate["suggested_new_name"] = build_tmdb_suggestion(entry, candidate)
         candidates.sort(key=lambda value: value["score"], reverse=True)
         candidates = candidates[:max_candidates]
+        # Build suggestions only for the shortlist: the season lookup below is a
+        # network call, and a candidate that did not survive ranking is not
+        # worth one. The client caches per (series, season), so a whole season
+        # of files costs one request.
+        season = entry.get("season")
+        episode = entry.get("episode")
+        want_episode_title = (
+            entry.get("media_type") == "tv" and season is not None and episode is not None
+        )
+        for candidate in candidates:
+            episode_title = None
+            if want_episode_title:
+                episode_title = client.season_episode_titles(
+                    candidate["tmdb_id"], season, language
+                ).get(episode)
+                candidate["episode_title"] = episode_title
+            candidate["suggested_new_name"] = build_tmdb_suggestion(
+                entry, candidate, episode_title
+            )
         entry["tmdb_candidates"] = candidates
+        if want_episode_title and candidates and not candidates[0].get("episode_title"):
+            entry.setdefault("reason", []).append("tmdb_episode_title_unavailable")
         if not candidates:
             status = "not_found"
             reason = "tmdb_no_candidates"
@@ -1309,31 +1503,77 @@ def validate_organize_plan(plan):
         raise ToolError("Organize plan root_path must be a narrow absolute path")
     if posixpath.normpath(root) != root:
         raise ToolError("Organize plan root_path is not normalized")
-    validate_folder_target(destination_name)
-    if destination_path != join_path(root, destination_name):
-        raise ToolError("Organize destination is not a direct child of root_path")
+    if not isinstance(destination_name, str) or not destination_name or destination_name.startswith("/"):
+        raise ToolError("Organize destination_name must be a non-empty relative path")
+    for segment in destination_name.split("/"):
+        validate_folder_target(segment)
+    if destination_path != posixpath.normpath(join_path(root, destination_name)):
+        raise ToolError("Organize destination_path does not match root_path/destination_name")
+    if not path_is_within(root, destination_path) or destination_path == root:
+        raise ToolError("Organize destination must be within root_path")
     if not isinstance(entries, list) or not 1 <= len(entries) <= 20:
         raise ToolError("Organize plan must contain 1-20 exact folders")
     if plan.get("folder_count") != len(entries):
         raise ToolError("Organize plan folder_count does not match entries")
     seen = set()
+    target_seen = set()
     required = {"name", "source_dir", "source_path", "target_dir", "target_path"}
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != required:
             raise ToolError("Invalid organize plan entry")
         name = entry["name"]
         validate_folder_target(name)
-        if name.casefold() in seen:
-            raise ToolError("Organize folder names must be unique")
-        seen.add(name.casefold())
-        if entry["source_dir"] != root or entry["source_path"] != join_path(root, name):
-            raise ToolError("Organize source path does not match root/name")
+        source_dir = entry["source_dir"]
+        if not isinstance(source_dir, str) or not source_dir.startswith("/") \
+                or posixpath.normpath(source_dir) != source_dir:
+            raise ToolError("Organize source_dir must be a normalized absolute path")
+        if not path_is_within(root, source_dir):
+            raise ToolError("Organize source_dir escapes root_path")
+        if entry["source_path"] != join_path(source_dir, name):
+            raise ToolError("Organize source path does not match source_dir/name")
+        if entry["source_path"].casefold() in seen:
+            raise ToolError("Organize source paths must be unique")
+        seen.add(entry["source_path"].casefold())
         if entry["target_dir"] != destination_path \
                 or entry["target_path"] != join_path(destination_path, name):
             raise ToolError("Organize target path does not match destination/name")
+        target_key = entry["target_path"].casefold()
+        if target_key in target_seen:
+            raise ToolError("Organize target names must be unique")
+        target_seen.add(target_key)
         if not path_is_within(root, entry["source_path"]) \
                 or not path_is_within(root, entry["target_path"]):
             raise ToolError("Organize plan entry escapes root_path")
+    for path_a, path_b in itertools.combinations(
+        (entry["source_path"] for entry in entries), 2
+    ):
+        if path_is_within(path_a, path_b) or path_is_within(path_b, path_a):
+            raise ToolError("Organize plan entries overlap: {} / {}".format(path_a, path_b))
+
+
+def resolve_organize_relative_path(root, raw, label="path"):
+    """Resolve a --folder/--destination value into (parent_dir, name, full_path).
+
+    A bare name (no "/") is a direct child of root, preserving prior
+    behavior. A relative path with "/" segments identifies a location nested
+    under root at any depth; every segment is validated the same way a
+    direct-child name would be, and traversal outside root is rejected by
+    construction (no ".", "..", or absolute segments are accepted).
+    """
+    if not isinstance(raw, str) or not raw or raw.startswith("/"):
+        raise ToolError("Organize {} must be a non-empty relative path: {}".format(label, raw))
+    segments = raw.split("/")
+    for segment in segments:
+        validate_folder_target(segment)
+    name = segments[-1]
+    relative_dir = "/".join(segments[:-1])
+    parent_dir = join_path(root, relative_dir) if relative_dir else root
+    full_path = join_path(parent_dir, name)
+    return parent_dir, name, full_path
+
+
+def parse_organize_folder_arg(root, raw):
+    return resolve_organize_relative_path(root, raw, label="--folder value")
 
 
 def command_organize_plan(args):
@@ -1341,26 +1581,62 @@ def command_organize_plan(args):
     if not isinstance(root, str) or not root.startswith("/") or root == "/" \
             or posixpath.normpath(root) != root:
         raise ToolError("--path must be a normalized, narrow, non-root absolute AList path")
-    validate_folder_target(args.destination)
-    names = list(dict.fromkeys(args.folder))
-    if len(names) != len(args.folder):
+    destination_parent, destination_leaf, destination_path = resolve_organize_relative_path(
+        root, args.destination, label="--destination"
+    )
+    destination_is_nested = destination_parent != root
+    raw_folders = list(dict.fromkeys(args.folder))
+    if len(raw_folders) != len(args.folder):
         raise ToolError("--folder values must be unique")
-    if not 1 <= len(names) <= 20:
-        raise ToolError("Organize plan requires 1-20 exact direct-child folders")
-    for name in names:
-        validate_folder_target(name)
-        if name.casefold() == args.destination.casefold():
+    if not 1 <= len(raw_folders) <= 20:
+        raise ToolError("Organize plan requires 1-20 exact source folders")
+    resolved = []
+    for raw in raw_folders:
+        source_dir, name, source_path = parse_organize_folder_arg(root, raw)
+        if not path_is_within(root, source_dir):
+            raise ToolError("Organize source escapes root_path: {}".format(raw))
+        if source_path == destination_path:
             raise ToolError("A source folder cannot be the destination folder")
+        if path_is_within(source_path, destination_path):
+            raise ToolError("Destination cannot be nested inside a source folder: {}".format(raw))
+        resolved.append((source_dir, name, source_path))
+    source_paths = [item[2] for item in resolved]
+    for i, path_a in enumerate(source_paths):
+        for path_b in source_paths[i + 1:]:
+            if path_a == path_b:
+                raise ToolError("--folder values must be unique")
+            if path_is_within(path_a, path_b) or path_is_within(path_b, path_a):
+                raise ToolError(
+                    "Selected organize folders overlap; one contains the other: {} / {}".format(
+                        path_a, path_b
+                    )
+                )
 
     client = AListClient.from_environment(args.timeout, args.interactive_auth)
     settings = client.settings()
-    listing = client.list_dir(root, refresh=True)
-    if not listing["write"]:
+    root_listing = client.list_dir(root, refresh=True)
+    if not root_listing["write"]:
         raise ToolError("The selected organize root is read-only")
-    items = {str(item.get("name", "")): item for item in listing["content"]}
-    folded = {name.casefold(): item for name, item in items.items()}
-    destination_item = folded.get(args.destination.casefold())
-    destination_path = join_path(root, args.destination)
+    listing_cache = {root: root_listing}
+
+    def cached_listing(path):
+        if path not in listing_cache:
+            listing_cache[path] = client.list_dir(path, refresh=True)
+        return listing_cache[path]
+
+    destination_parent_listing = cached_listing(destination_parent)
+    destination_parent_items = {
+        str(item.get("name", "")): item for item in destination_parent_listing["content"]
+    }
+    destination_item = {name.casefold(): item for name, item in destination_parent_items.items()}.get(
+        destination_leaf.casefold()
+    )
+    if destination_item is None and destination_is_nested:
+        raise ToolError(
+            "Nested organize destination does not exist: {}. "
+            "This Skill only creates a single-level destination; "
+            "create the nested destination first.".format(destination_path)
+        )
     destination_names = set()
     if destination_item is not None:
         if not destination_item.get("is_dir"):
@@ -1371,21 +1647,28 @@ def command_organize_plan(args):
         destination_names = {str(item.get("name", "")).casefold()
                              for item in destination_listing["content"]}
     entries = []
-    for name in names:
-        item = items.get(name)
+    for source_dir, name, source_path in resolved:
+        source_listing = cached_listing(source_dir)
+        if not source_listing["write"]:
+            raise ToolError("The organize source directory is read-only: {}".format(source_dir))
+        source_items = {str(item.get("name", "")): item for item in source_listing["content"]}
+        item = source_items.get(name)
         if item is None:
-            raise ToolError("Source folder changed or disappeared: {}".format(join_path(root, name)))
+            raise ToolError("Source folder changed or disappeared: {}".format(source_path))
         if not item.get("is_dir"):
-            raise ToolError("Organize source is not a directory: {}".format(name))
+            raise ToolError("Organize source is not a directory: {}".format(source_path))
         if name.casefold() in destination_names:
             raise ToolError("Destination already contains: {}".format(join_path(destination_path, name)))
         entries.append({
             "name": name,
-            "source_dir": root,
-            "source_path": join_path(root, name),
+            "source_dir": source_dir,
+            "source_path": source_path,
             "target_dir": destination_path,
             "target_path": join_path(destination_path, name),
         })
+    target_keys = [entry["target_path"].casefold() for entry in entries]
+    if len(set(target_keys)) != len(target_keys):
+        raise ToolError("Organize plan target names must be unique")
     plan = {
         "schema_version": SCHEMA_VERSION,
         "plan_id": uuid.uuid4().hex,
@@ -1398,7 +1681,7 @@ def command_organize_plan(args):
         "destination_path": destination_path,
         "create_destination": destination_item is None,
         "writable": True,
-        "providers": listing["providers"],
+        "providers": root_listing["providers"],
         "folder_count": len(entries),
         "entries": entries,
     }
@@ -1510,11 +1793,32 @@ def command_organize_apply(args):
     root_listing = client.list_dir(plan["root_path"], refresh=True)
     if not root_listing["write"]:
         raise ToolError("The organize root is read-only")
-    root_items = {str(item.get("name", "")): item for item in root_listing["content"]}
-    folded = {name.casefold(): item for name, item in root_items.items()}
-    destination_item = folded.get(plan["destination_name"].casefold())
+    listing_cache = {plan["root_path"]: root_listing}
+    destination_parent = parent_path(plan["destination_path"])
+    destination_leaf = posixpath.basename(plan["destination_path"])
+    destination_is_nested = destination_parent != plan["root_path"]
+    if destination_parent not in listing_cache:
+        listing_cache[destination_parent] = client.list_dir(destination_parent, refresh=True)
+    destination_parent_listing = listing_cache[destination_parent]
+    destination_parent_items = {
+        str(item.get("name", "")): item for item in destination_parent_listing["content"]
+    }
+    destination_item = {name.casefold(): item for name, item in destination_parent_items.items()}.get(
+        destination_leaf.casefold()
+    )
+    if destination_item is None and destination_is_nested:
+        raise ToolError("Nested organize destination changed or disappeared: {}".format(
+            plan["destination_path"]
+        ))
     for entry in plan["entries"]:
-        item = root_items.get(entry["name"])
+        source_dir = entry["source_dir"]
+        if source_dir not in listing_cache:
+            listing_cache[source_dir] = client.list_dir(source_dir, refresh=True)
+        source_listing = listing_cache[source_dir]
+        if not source_listing["write"]:
+            raise ToolError("The organize source directory is read-only: {}".format(source_dir))
+        source_items = {str(item.get("name", "")): item for item in source_listing["content"]}
+        item = source_items.get(entry["name"])
         if item is None or not item.get("is_dir"):
             raise ToolError("Source folder changed or disappeared: {}".format(entry["source_path"]))
     if destination_item is not None and not destination_item.get("is_dir"):
@@ -1573,12 +1877,16 @@ def command_organize_rollback(args):
     if journal.get("alist_url") and client.base_url != journal["alist_url"]:
         raise ToolError("ALIST_URL does not match the organize journal's alist_url")
 
-    root_listing = client.list_dir(journal["root_path"], refresh=True)
-    root_names = {str(item.get("name", "")).casefold() for item in root_listing["content"]}
     destination_listing = client.list_dir(journal["destination_path"], refresh=True)
     destination_items = {str(item.get("name", "")): item for item in destination_listing["content"]}
+    source_dir_listing_cache = {}
     for record in candidates:
-        if record["name"].casefold() in root_names:
+        source_dir = record["source_dir"]
+        if source_dir not in source_dir_listing_cache:
+            source_dir_listing_cache[source_dir] = client.list_dir(source_dir, refresh=True)
+        source_names = {str(item.get("name", "")).casefold()
+                        for item in source_dir_listing_cache[source_dir]["content"]}
+        if record["name"].casefold() in source_names:
             raise ToolError("Original location is occupied: {}".format(record["source_path"]))
         item = destination_items.get(record["name"])
         if item is None or not item.get("is_dir"):
@@ -2099,6 +2407,19 @@ def validate_manual_target(old_name, new_name):
         raise ToolError("Manual target exceeds 255 UTF-8 bytes")
     if Path(old_name).suffix.casefold() != Path(new_name).suffix.casefold():
         raise ToolError("Manual approval must preserve the original file extension")
+    extension = Path(new_name).suffix
+    stem = new_name[: -len(extension)] if extension else new_name
+    if CJK_RE.search(stem):
+        raise ToolError(
+            "Video filenames stay canonical; move the localized title to the folder label: {}"
+            .format(new_name)
+        )
+    for token in stem.split("."):
+        if LANGUAGE_TAG_RE.match(token):
+            raise ToolError(
+                "Manual target keeps an embedded-subtitle/language marker '{}'; "
+                "see references/naming.md".format(token)
+            )
 
 
 def validate_tv_target_without_year(new_name):
@@ -2570,7 +2891,13 @@ def build_parser():
     organize_plan.add_argument("--destination", required=True, help="Exact direct-child destination")
     organize_plan.add_argument(
         "--folder", action="append", required=True,
-        help="Exact direct-child source folder; repeat once per folder",
+        help=(
+            "Exact source folder under --path; repeat once per folder. "
+            "A bare name is a direct child of --path; a 'a/b/c' relative "
+            "path selects a folder nested under --path at any depth "
+            "(moved as a single unit, landing as a direct child of "
+            "--destination)."
+        ),
     )
     organize_plan.add_argument("--output", required=True, help="New local organize plan path")
     organize_plan.set_defaults(func=command_organize_plan)

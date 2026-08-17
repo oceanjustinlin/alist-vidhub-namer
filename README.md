@@ -19,7 +19,7 @@ The bundled script only calls the AList endpoints needed to list, rename, create
 
 ## Current status
 
-The repository contains an initial working implementation and documentation. At the current commit, two filename-parsing unit tests fail around stripping Chinese subtitle/release notes. Treat the mutation workflow as **not release-ready** until those tests pass and you have completed a canary against your own AList instance.
+The repository contains a working implementation and documentation, and the unit tests pass. Treat the mutation workflow as **not release-ready** until you have completed a canary against your own AList instance.
 
 ## Before you start
 
@@ -78,9 +78,9 @@ An ordinary request to scan, research, audit, or plan does not authorize a remot
 
 ### Batch auto-execute mode
 
-For repeated work in one personal library, opt in once per session to remove redundant per-item approvals. The skill may then approve and execute video-name or folder-name changes only when one identity is clear, the plan has no destination conflict, the live layout matches the plan, and confidence meets the plan threshold.
+For repeated work in one personal library, opt in once per session to remove redundant per-item approvals. The skill may then approve and execute **video-name** changes without a separate per-item confirmation, and only when one identity is clear, the plan has no destination conflict, the live layout matches the plan, and confidence meets the plan threshold.
 
-This mode does not approve directory moves into `Movies/` or `TV Shows/`. Before `organize-apply --execute`, you still review every pending folder and provide one explicit confirmation for that batch.
+Folder-name renames and directory moves into `Movies/` or `TV Shows/` are never automatic in this mode. A folder rename rewrites every descendant path and invalidates the paths recorded in earlier video journals, so both classes wait for one explicit confirmation covering the whole batch: you review every folder pending a rename or a move, then give a single combined go.
 
 ## Naming model
 
@@ -134,10 +134,10 @@ Before
   先见之明.S01E01.HD1080P.YYeTs.中英双字.霸王龙压制组T-Rex.mp4
 
 After
-  The.OA.S01E01.1080p-YYeTs.mp4
+  The.OA.S01E01.Homecoming.1080p-YYeTs.mp4
 ```
 
-The plan resolves the Chinese title, removes subtitle and encoder noise, and keeps the source-evidenced release group. The series year and ID belong in the series folder and plan, while the episode file keeps the series title and normalized `SxxEyy` key.
+The plan resolves the Chinese title, removes subtitle and encoder noise, and keeps the source-evidenced release group. `Homecoming` comes from TMDB's `en-US` episode list: the episode title is a required field, added even when the source filename omits it. The series year and ID belong in the series folder and plan, while the episode file keeps the series title and normalized `SxxEyy` key.
 
 ### Folder organization
 
